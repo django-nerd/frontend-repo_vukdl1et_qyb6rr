@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
-import LocationPicker from './components/LocationPicker'
-import { MapContainer, TileLayer, Marker, Polyline } from 'react-leaflet'
+import { MapContainer, TileLayer, Marker, Polyline, useMapEvents } from 'react-leaflet'
+import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 
 const API_BASE = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000'
@@ -51,6 +51,32 @@ function useBackend() {
   return { get, post }
 }
 
+// Fix default marker icons for Leaflet when bundling
+const DefaultIcon = L.icon({
+  iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+  iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
+  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+  iconSize: [25, 41],
+  iconAnchor: [12, 41],
+})
+L.Marker.prototype.options.icon = DefaultIcon
+
+function MapClickSelector({ selecting, setSelecting, setStart, setEnd }) {
+  useMapEvents({
+    click(e) {
+      const { lat, lng } = e.latlng
+      if (selecting === 'start') {
+        setStart({ lat, lon: lng })
+        setSelecting('end')
+      } else if (selecting === 'end') {
+        setEnd({ lat, lon: lng })
+        setSelecting(null)
+      }
+    }
+  })
+  return null
+}
+
 function Planner() {
   const { post } = useBackend()
   const [mode, setMode] = useState('balanced')
@@ -59,109 +85,117 @@ function Planner() {
 
   const [start, setStart] = useState({ lat: 28.6315, lon: 77.2167 })
   const [end, setEnd] = useState({ lat: 28.6129, lon: 77.2295 })
+  const [selecting, setSelecting] = useState(null) // 'start' | 'end' | null
 
-  const segments = useMemo(() => {
-    const mid = {
-      lat: (start.lat + end.lat) / 2,
-      lon: (start.lon + end.lon) / 2,
-    }
-    return ([
-      {
-        segment_id: 'A',
-        start: { lat: start.lat, lon: start.lon },
-        end: { lat: mid.lat, lon: mid.lon },
-        distance_m: 800,
-        avg_speed_kmh: 28,
-        signals: {
-          streetlight_intensity: 0.75,
-          cctv_density: 0.6,
-          police_proximity: 0.65,
-          crowd_density: 0.55,
-          crime_index: 0.2,
-          community_reports_safety: 0.7,
-        }
-      },
-      {
-        segment_id: 'B',
-        start: { lat: mid.lat, lon: mid.lon },
-        end: { lat: end.lat, lon: end.lon },
-        distance_m: 1200,
-        avg_speed_kmh: 35,
-        signals: {
-          streetlight_intensity: 0.4,
-          cctv_density: 0.3,
-          police_proximity: 0.4,
-          crowd_density: 0.35,
-          crime_index: 0.6,
-          community_reports_safety: 0.2,
-        }
-      },
-    ])
-  }, [start, end])
-
-  const scoreRoute = async () => {
-    const data = await post('/api/routes/score', { segments, time_of_day: timeOfDay, mode })
-    setResult(data)
-  }
+  const [chosenRoute, setChosenRoute] = useState(null)
+  const [alternatives, setAlternatives] = useState([])
 
   const center = useMemo(() => ({
     lat: (start.lat + end.lat) / 2,
     lon: (start.lon + end.lon) / 2,
   }), [start, end])
 
+  const showSafest = async () => {
+    setChosenRoute(null)
+    setAlternatives([])
+    const data = await post('/api/routes/plan', {
+      start, end, mode, time_of_day: timeOfDay
+    })
+    setChosenRoute(data.chosen)
+    setAlternatives(data.alternatives || [])
+    setResult({
+      mode: data.mode,
+      eta_minutes: data.chosen?.eta_minutes,
+      average_safety_score: data.chosen?.average_safety_score,
+    })
+  }
+
   return (
     <Section title="Safety-based Route Planner" actions={
-      <button onClick={scoreRoute} className="px-3 py-1.5 rounded bg-blue-600 text-white text-sm hover:bg-blue-700">Find Safest Route</button>
+      <div className="flex gap-2">
+        <button onClick={() => setSelecting('start')} className={`px-3 py-1.5 rounded border text-sm ${selecting==='start'?'bg-blue-600 text-white border-blue-600':'bg-white hover:bg-gray-50'}`}>Pick start</button>
+        <button onClick={() => setSelecting('end')} className={`px-3 py-1.5 rounded border text-sm ${selecting==='end'?'bg-green-600 text-white border-green-600':'bg-white hover:bg-gray-50'}`}>Pick end</button>
+        <button onClick={showSafest} className="px-3 py-1.5 rounded bg-blue-600 text-white text-sm hover:bg-blue-700">Show Safest Route</button>
+      </div>
     }>
-      <div className="grid md:grid-cols-3 gap-4">
-        <div className="space-y-3">
-          <div className="flex gap-2 flex-wrap">
-            {['fastest','safest','balanced','night_safe','female_friendly'].map(m => (
-              <button key={m} onClick={() => setMode(m)} className={`px-3 py-1.5 rounded border text-sm ${mode===m? 'bg-blue-600 text-white border-blue-600':'bg-white hover:bg-gray-50'}`}>{m.replace('_',' ')}</button>
-            ))}
-          </div>
-          <div className="flex gap-2">
-            {['day','night','dawn_dusk'].map(t => (
-              <button key={t} onClick={() => setTimeOfDay(t)} className={`px-3 py-1.5 rounded border text-sm ${timeOfDay===t? 'bg-gray-900 text-white border-gray-900':'bg-white hover:bg-gray-50'}`}>{t}</button>
-            ))}
-          </div>
-          <div className="text-xs text-gray-600">Click the map to set Start and End. Each segment gets a 0–100 Safety Score from lighting, CCTV, police, crowds, crime, community reports, and time of day.</div>
-          <LocationPicker start={start} setStart={setStart} end={end} setEnd={setEnd} />
+      <div className="space-y-3">
+        <div className="flex flex-wrap gap-2">
+          {['fastest','safest','balanced','night_safe','female_friendly'].map(m => (
+            <button key={m} onClick={() => setMode(m)} className={`px-3 py-1.5 rounded border text-sm ${mode===m? 'bg-blue-600 text-white border-blue-600':'bg-white hover:bg-gray-50'}`}>{m.replace('_',' ')}</button>
+          ))}
+          {['day','night','dawn_dusk'].map(t => (
+            <button key={t} onClick={() => setTimeOfDay(t)} className={`px-3 py-1.5 rounded border text-sm ${timeOfDay===t? 'bg-gray-900 text-white border-gray-900':'bg-white hover:bg-gray-50'}`}>{t}</button>
+          ))}
         </div>
-        <div className="md:col-span-2">
-          <div className="aspect-[16/9] w-full rounded-lg overflow-hidden border">
-            <MapContainer center={[center.lat, center.lon]} zoom={14} style={{ height: '100%', width: '100%' }}>
-              <TileLayer
-                attribution='&copy; OpenStreetMap contributors'
-                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-              />
-              <Marker position={[start.lat, start.lon]} />
-              <Marker position={[end.lat, end.lon]} />
-              <Polyline positions={[[start.lat, start.lon], [end.lat, end.lon]]} color="#2563eb" />
-            </MapContainer>
-          </div>
-          {result && (
-            <div className="mt-4 grid md:grid-cols-3 gap-4">
-              <div className="p-3 rounded border bg-gray-50">
-                <div className="text-sm text-gray-600">Mode</div>
-                <div className="text-lg font-semibold">{result.mode}</div>
-                <div className="text-sm text-gray-600 mt-2">ETA</div>
-                <div className="text-lg font-semibold">{result.eta_minutes} min</div>
-                <div className="text-sm text-gray-600 mt-2">Average Safety</div>
-                <div className="text-lg font-semibold">{result.average_safety_score}</div>
-              </div>
-              <div className="md:col-span-2 space-y-2">
-                {result.segment_scores?.map(s => (
-                  <div key={s.segment_id} className="flex items-center justify-between p-2 rounded border">
-                    <div className="flex items-center gap-2"><Badge color={s.safety_score>70?'green':s.safety_score>50?'amber':'red'}>Seg {s.segment_id}</Badge></div>
-                    <div className="text-sm">Safety Score</div>
-                    <div className="text-base font-semibold">{s.safety_score}</div>
-                  </div>
-                ))}
-              </div>
+
+        <div className="rounded-lg overflow-hidden border" style={{ height: '65vh' }}>
+          <MapContainer center={[center.lat, center.lon]} zoom={14} style={{ height: '100%', width: '100%' }}>
+            <TileLayer
+              attribution='&copy; OpenStreetMap contributors'
+              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+            />
+            <MapClickSelector selecting={selecting} setSelecting={setSelecting} setStart={setStart} setEnd={setEnd} />
+            <Marker position={[start.lat, start.lon]} />
+            <Marker position={[end.lat, end.lon]} />
+            {/* Draw alternatives first in grey */}
+            {alternatives.filter(a=>a!==chosenRoute).map((alt, i) => (
+              <Polyline key={i} positions={(alt.geometry?.coordinates||[]).map(c=>[c[0], c[1]])} color="#9ca3af" weight={3} opacity={0.6} />
+            ))}
+            {/* Draw chosen route on top in blue */}
+            {chosenRoute && (
+              <Polyline positions={(chosenRoute.geometry?.coordinates||[]).map(c=>[c[0], c[1]])} color="#2563eb" weight={6} />
+            )}
+          </MapContainer>
+        </div>
+
+        {result && (
+          <div className="grid md:grid-cols-3 gap-4">
+            <div className="p-3 rounded border bg-gray-50">
+              <div className="text-sm text-gray-600">Mode</div>
+              <div className="text-lg font-semibold">{result.mode}</div>
+              <div className="text-sm text-gray-600 mt-2">ETA</div>
+              <div className="text-lg font-semibold">{result.eta_minutes} min</div>
+              <div className="text-sm text-gray-600 mt-2">Average Safety</div>
+              <div className="text-lg font-semibold">{result.average_safety_score}</div>
             </div>
-          )}
+            <div className="md:col-span-2 space-y-2">
+              {(chosenRoute?.segment_scores||[]).slice(0,8).map(s => (
+                <div key={s.segment_id} className="flex items-center justify-between p-2 rounded border">
+                  <div className="flex items-center gap-2"><Badge color={s.safety_score>70?'green':s.safety_score>50?'amber':'red'}>Seg {s.segment_id}</Badge></div>
+                  <div className="text-sm">Safety Score</div>
+                  <div className="text-base font-semibold">{s.safety_score}</div>
+                </div>
+              ))}
+              {chosenRoute?.segment_scores?.length>8 && <div className="text-xs text-gray-500">Showing first 8 segments</div>}
+            </div>
+          </div>
+        )}
+
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className="text-xs text-gray-600">Start (lat, lon)</label>
+            <div className="flex gap-2">
+              <input type="number" step="0.0001" value={start.lat}
+                onChange={e => setStart({ ...start, lat: parseFloat(e.target.value) })}
+                className="w-full border rounded px-2 py-1 text-sm" />
+              <input type="number" step="0.0001" value={start.lon}
+                onChange={e => setStart({ ...start, lon: parseFloat(e.target.value) })}
+                className="w-full border rounded px-2 py-1 text-sm" />
+            </div>
+          </div>
+          <div>
+            <label className="text-xs text-gray-600">End (lat, lon)</label>
+            <div className="flex gap-2">
+              <input type="number" step="0.0001" value={end.lat}
+                onChange={e => setEnd({ ...end, lat: parseFloat(e.target.value) })}
+                className="w-full border rounded px-2 py-1 text-sm" />
+              <input type="number" step="0.0001" value={end.lon}
+                onChange={e => setEnd({ ...end, lon: parseFloat(e.target.value) })}
+                className="w-full border rounded px-2 py-1 text-sm" />
+            </div>
+          </div>
         </div>
+        <p className="text-xs text-gray-600">Use the large map to click your Start and End. Routes are snapped to roads with full turns and geometry.</p>
       </div>
     </Section>
   )
