@@ -78,7 +78,7 @@ function MapClickSelector({ selecting, setSelecting, setStart, setEnd }) {
 }
 
 function Planner() {
-  const { post } = useBackend()
+  const { post, get } = useBackend()
   const [mode, setMode] = useState('balanced')
   const [timeOfDay, setTimeOfDay] = useState('day')
   const [result, setResult] = useState(null)
@@ -92,17 +92,54 @@ function Planner() {
   const [userId, setUserId] = useState('user_a')
   const [logStatus, setLogStatus] = useState('')
 
+  // My Trips and Bookmarks
+  const [trips, setTrips] = useState([])
+  const [loadingTrips, setLoadingTrips] = useState(false)
+  const [bookmarks, setBookmarks] = useState([])
+  const [bookmarkName, setBookmarkName] = useState('Home ⇄ Work')
+
   const center = useMemo(() => ({
     lat: (start.lat + end.lat) / 2,
     lon: (start.lon + end.lon) / 2,
   }), [start, end])
 
-  const showSafest = async () => {
+  const loadTrips = async (uid) => {
+    if (!uid) return
+    try {
+      setLoadingTrips(true)
+      const t = await get(`/api/trips?user_uid=${encodeURIComponent(uid)}`)
+      setTrips(t.trips || [])
+    } finally {
+      setLoadingTrips(false)
+    }
+  }
+
+  // Bookmarks persistence (localStorage)
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem('sr_bookmarks')
+      if (raw) setBookmarks(JSON.parse(raw))
+    } catch {}
+  }, [])
+  const saveBookmarks = (next) => {
+    setBookmarks(next)
+    try { localStorage.setItem('sr_bookmarks', JSON.stringify(next)) } catch {}
+  }
+
+  useEffect(() => { loadTrips(userId) }, [userId])
+
+  const showSafest = async (opts) => {
+    // Allow override for re-run
+    const s = opts?.start || start
+    const e = opts?.end || end
+    const m = opts?.mode || mode
+    const t = opts?.time_of_day || timeOfDay
+
     setChosenRoute(null)
     setAlternatives([])
     setLogStatus('')
     const data = await post('/api/routes/plan', {
-      start, end, mode, time_of_day: timeOfDay
+      start: s, end: e, mode: m, time_of_day: t
     })
     setChosenRoute(data.chosen)
     setAlternatives(data.alternatives || [])
@@ -116,7 +153,6 @@ function Planner() {
 
   const routeId = useMemo(() => {
     if (!chosenRoute?.geometry?.coordinates?.length) return ''
-    // Simple deterministic id derived from endpoints and distance
     const head = chosenRoute.geometry.coordinates[0]
     const tail = chosenRoute.geometry.coordinates[chosenRoute.geometry.coordinates.length - 1]
     return `r_${head[0].toFixed(4)}_${head[1].toFixed(4)}_${tail[0].toFixed(4)}_${tail[1].toFixed(4)}_${Math.round(chosenRoute.distance_m)}`
@@ -136,8 +172,42 @@ function Planner() {
       safety_score: chosenRoute.average_safety_score,
     }
     const res = await post('/api/trips', body)
-    if (res.trip_id) setLogStatus('Saved to history')
-    else setLogStatus('Could not save, try again')
+    if (res.trip_id) {
+      setLogStatus('Saved to history')
+      loadTrips(userId)
+    } else setLogStatus('Could not save, try again')
+  }
+
+  // My Trips actions
+  const setFromTrip = (t) => {
+    if (!t) return
+    setStart(t.origin)
+    setEnd(t.destination)
+    if (t.mode) setMode(t.mode)
+  }
+  const reRunTrip = async (t) => {
+    if (!t) return
+    setFromTrip(t)
+    await showSafest({ start: t.origin, end: t.destination, mode: t.mode })
+  }
+
+  // Bookmarks actions
+  const addBookmark = () => {
+    if (!bookmarkName.trim()) return
+    const next = [
+      { id: `b_${Date.now()}`, name: bookmarkName.trim(), start, end },
+      ...bookmarks
+    ].slice(0, 20)
+    saveBookmarks(next)
+    setBookmarkName('')
+  }
+  const useBookmark = (b) => {
+    setStart(b.start)
+    setEnd(b.end)
+  }
+  const deleteBookmark = (id) => {
+    const next = bookmarks.filter(b => b.id !== id)
+    saveBookmarks(next)
   }
 
   return (
@@ -145,7 +215,7 @@ function Planner() {
       <div className="flex gap-2">
         <button onClick={() => setSelecting('start')} className={`px-3 py-1.5 rounded border text-sm ${selecting==='start'?'bg-blue-600 text-white border-blue-600':'bg-white hover:bg-gray-50'}`}>Pick start</button>
         <button onClick={() => setSelecting('end')} className={`px-3 py-1.5 rounded border text-sm ${selecting==='end'?'bg-green-600 text-white border-green-600':'bg-white hover:bg-gray-50'}`}>Pick end</button>
-        <button onClick={showSafest} className="px-3 py-1.5 rounded bg-blue-600 text-white text-sm hover:bg-blue-700">Show Safest Route</button>
+        <button onClick={() => showSafest()} className="px-3 py-1.5 rounded bg-blue-600 text-white text-sm hover:bg-blue-700">Show Safest Route</button>
       </div>
     }>
       <div className="space-y-3">
@@ -159,7 +229,7 @@ function Planner() {
           ))}
         </div>
 
-        <div className="rounded-lg overflow-hidden border" style={{ height: '65vh' }}>
+        <div className="rounded-lg overflow-hidden border" style={{ height: '60vh' }}>
           <MapContainer center={[center.lat, center.lon]} zoom={14} style={{ height: '100%', width: '100%' }}>
             <TileLayer
               attribution='&copy; OpenStreetMap contributors'
@@ -190,16 +260,68 @@ function Planner() {
               <div className="text-lg font-semibold">{result.distance_km} km</div>
               <div className="text-sm text-gray-600 mt-2">Average Safety</div>
               <div className="text-lg font-semibold">{result.average_safety_score}</div>
-              <div className="pt-2">
+              <div className="pt-2 flex gap-2">
                 <button onClick={logTrip} disabled={!chosenRoute} className="px-3 py-1.5 rounded bg-green-600 text-white text-sm disabled:opacity-50">Save this trip</button>
-                {logStatus && <div className="text-xs text-green-700 mt-2">{logStatus}</div>}
+                <button onClick={() => showSafest()} className="px-3 py-1.5 rounded border text-sm">Recompute</button>
               </div>
+              {logStatus && <div className="text-xs text-green-700 mt-2">{logStatus}</div>}
             </div>
             <div className="md:col-span-2">
               <div className="text-sm text-gray-600">Route and alternatives are drawn on the map. Segment cards were removed for a cleaner view.</div>
+              <div className="mt-3 p-2 border rounded bg-white/60">
+                <div className="text-xs text-gray-600 mb-1">Bookmark current start/end</div>
+                <div className="flex gap-2">
+                  <input value={bookmarkName} onChange={e=>setBookmarkName(e.target.value)} className="flex-1 border rounded px-2 py-1 text-sm" placeholder="Bookmark name" />
+                  <button onClick={addBookmark} className="px-3 py-1.5 rounded border text-sm">Add</button>
+                </div>
+              </div>
             </div>
           </div>
         )}
+
+        {/* My Trips & Bookmarks */}
+        <div className="grid md:grid-cols-2 gap-4">
+          <div className="p-3 rounded border bg-gray-50">
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-sm font-medium">My Trips</div>
+              <button onClick={() => loadTrips(userId)} className="px-2 py-1 text-xs rounded border">{loadingTrips ? 'Loading...' : 'Refresh'}</button>
+            </div>
+            <div className="space-y-2 max-h-64 overflow-auto pr-1">
+              {trips.map(t => (
+                <div key={t._id} className="p-2 bg-white rounded border">
+                  <div className="flex items-center justify-between">
+                    <div className="text-sm font-medium">{t.mode} · {t.distance_km} km</div>
+                    <Badge color="blue">{t.eta_minutes} min</Badge>
+                  </div>
+                  <div className="text-xs text-gray-600 mt-1">{t.origin?.lat?.toFixed?.(3)},{t.origin?.lon?.toFixed?.(3)} → {t.destination?.lat?.toFixed?.(3)},{t.destination?.lon?.toFixed?.(3)}</div>
+                  <div className="flex gap-2 mt-2">
+                    <button onClick={() => { setFromTrip(t) }} className="px-2 py-1 text-xs rounded border">View</button>
+                    <button onClick={() => reRunTrip(t)} className="px-2 py-1 text-xs rounded bg-blue-600 text-white">Re-run</button>
+                  </div>
+                </div>
+              ))}
+              {!trips.length && <div className="text-sm text-gray-500">No trips yet. Plan and save a trip to see it here.</div>}
+            </div>
+          </div>
+          <div className="p-3 rounded border bg-gray-50">
+            <div className="text-sm font-medium mb-2">Bookmarks</div>
+            <div className="space-y-2 max-h-64 overflow-auto pr-1">
+              {bookmarks.map(b => (
+                <div key={b.id} className="p-2 bg-white rounded border">
+                  <div className="flex items-center justify-between">
+                    <div className="text-sm font-medium">{b.name}</div>
+                    <div className="flex gap-2">
+                      <button onClick={() => useBookmark(b)} className="px-2 py-1 text-xs rounded border">Use</button>
+                      <button onClick={() => deleteBookmark(b.id)} className="px-2 py-1 text-xs rounded border text-red-600">Delete</button>
+                    </div>
+                  </div>
+                  <div className="text-xs text-gray-600 mt-1">{b.start.lat.toFixed(3)},{b.start.lon.toFixed(3)} → {b.end.lat.toFixed(3)},{b.end.lon.toFixed(3)}</div>
+                </div>
+              ))}
+              {!bookmarks.length && <div className="text-sm text-gray-500">No bookmarks yet. Add one from the route summary above.</div>}
+            </div>
+          </div>
+        </div>
 
         <div className="grid grid-cols-2 gap-2">
           <div>
