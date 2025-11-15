@@ -89,6 +89,8 @@ function Planner() {
 
   const [chosenRoute, setChosenRoute] = useState(null)
   const [alternatives, setAlternatives] = useState([])
+  const [userId, setUserId] = useState('user_a')
+  const [logStatus, setLogStatus] = useState('')
 
   const center = useMemo(() => ({
     lat: (start.lat + end.lat) / 2,
@@ -98,6 +100,7 @@ function Planner() {
   const showSafest = async () => {
     setChosenRoute(null)
     setAlternatives([])
+    setLogStatus('')
     const data = await post('/api/routes/plan', {
       start, end, mode, time_of_day: timeOfDay
     })
@@ -107,7 +110,34 @@ function Planner() {
       mode: data.mode,
       eta_minutes: data.chosen?.eta_minutes,
       average_safety_score: data.chosen?.average_safety_score,
+      distance_km: data.chosen ? (data.chosen.distance_m / 1000).toFixed(2) : null,
     })
+  }
+
+  const routeId = useMemo(() => {
+    if (!chosenRoute?.geometry?.coordinates?.length) return ''
+    // Simple deterministic id derived from endpoints and distance
+    const head = chosenRoute.geometry.coordinates[0]
+    const tail = chosenRoute.geometry.coordinates[chosenRoute.geometry.coordinates.length - 1]
+    return `r_${head[0].toFixed(4)}_${head[1].toFixed(4)}_${tail[0].toFixed(4)}_${tail[1].toFixed(4)}_${Math.round(chosenRoute.distance_m)}`
+  }, [chosenRoute])
+
+  const logTrip = async () => {
+    if (!chosenRoute) return
+    setLogStatus('')
+    const body = {
+      user_uid: userId,
+      origin: start,
+      destination: end,
+      route_id: routeId || `r_${Date.now()}`,
+      mode,
+      distance_km: Number((chosenRoute.distance_m / 1000).toFixed(2)),
+      eta_minutes: chosenRoute.eta_minutes,
+      safety_score: chosenRoute.average_safety_score,
+    }
+    const res = await post('/api/trips', body)
+    if (res.trip_id) setLogStatus('Saved to history')
+    else setLogStatus('Could not save, try again')
   }
 
   return (
@@ -119,7 +149,8 @@ function Planner() {
       </div>
     }>
       <div className="space-y-3">
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap gap-2 items-center">
+          <input value={userId} onChange={e=>setUserId(e.target.value)} className="border rounded px-2 py-1 text-sm" placeholder="user id" />
           {['fastest','safest','balanced','night_safe','female_friendly'].map(m => (
             <button key={m} onClick={() => setMode(m)} className={`px-3 py-1.5 rounded border text-sm ${mode===m? 'bg-blue-600 text-white border-blue-600':'bg-white hover:bg-gray-50'}`}>{m.replace('_',' ')}</button>
           ))}
@@ -149,24 +180,23 @@ function Planner() {
         </div>
 
         {result && (
-          <div className="grid md:grid-cols-3 gap-4">
-            <div className="p-3 rounded border bg-gray-50">
+          <div className="grid md:grid-cols-3 gap-4 items-start">
+            <div className="p-3 rounded border bg-gray-50 space-y-1">
               <div className="text-sm text-gray-600">Mode</div>
               <div className="text-lg font-semibold">{result.mode}</div>
               <div className="text-sm text-gray-600 mt-2">ETA</div>
               <div className="text-lg font-semibold">{result.eta_minutes} min</div>
+              <div className="text-sm text-gray-600 mt-2">Distance</div>
+              <div className="text-lg font-semibold">{result.distance_km} km</div>
               <div className="text-sm text-gray-600 mt-2">Average Safety</div>
               <div className="text-lg font-semibold">{result.average_safety_score}</div>
+              <div className="pt-2">
+                <button onClick={logTrip} disabled={!chosenRoute} className="px-3 py-1.5 rounded bg-green-600 text-white text-sm disabled:opacity-50">Save this trip</button>
+                {logStatus && <div className="text-xs text-green-700 mt-2">{logStatus}</div>}
+              </div>
             </div>
-            <div className="md:col-span-2 space-y-2">
-              {(chosenRoute?.segment_scores||[]).slice(0,8).map(s => (
-                <div key={s.segment_id} className="flex items-center justify-between p-2 rounded border">
-                  <div className="flex items-center gap-2"><Badge color={s.safety_score>70?'green':s.safety_score>50?'amber':'red'}>Seg {s.segment_id}</Badge></div>
-                  <div className="text-sm">Safety Score</div>
-                  <div className="text-base font-semibold">{s.safety_score}</div>
-                </div>
-              ))}
-              {chosenRoute?.segment_scores?.length>8 && <div className="text-xs text-gray-500">Showing first 8 segments</div>}
+            <div className="md:col-span-2">
+              <div className="text-sm text-gray-600">Route and alternatives are drawn on the map. Segment cards were removed for a cleaner view.</div>
             </div>
           </div>
         )}
