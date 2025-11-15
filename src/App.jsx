@@ -151,17 +151,17 @@ function Planner() {
       mode: data.mode,
       eta_minutes: data.chosen?.eta_minutes,
       average_safety_score: data.chosen?.average_safety_score,
-      distance_km: data.chosen ? (data.chosen.distance_m / 1000).toFixed(2) : null,
+      distance_km: data.chosen ? Number((data.chosen.distance_m / 1000).toFixed(3)) : null,
     })
   }
 
-  // Auto recompute when mode/time changes (if previously computed)
+  // Auto recompute when mode/time/start/end change (if previously computed)
   useEffect(() => {
     if (autoRefresh && result) {
       showSafest()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, timeOfDay])
+  }, [mode, timeOfDay, start, end])
 
   const routeId = useMemo(() => {
     if (!chosenRoute?.geometry?.coordinates?.length) return ''
@@ -179,7 +179,7 @@ function Planner() {
       destination: end,
       route_id: routeId || `r_${Date.now()}`,
       mode,
-      distance_km: Number((chosenRoute.distance_m / 1000).toFixed(2)),
+      distance_km: Number((chosenRoute.distance_m / 1000).toFixed(3)),
       eta_minutes: chosenRoute.eta_minutes,
       safety_score: chosenRoute.average_safety_score,
     }
@@ -279,9 +279,9 @@ function Planner() {
               <div className="text-sm text-gray-600">Mode</div>
               <div className="text-lg font-semibold">{result.mode}</div>
               <div className="text-sm text-gray-600 mt-2">ETA</div>
-              <div className="text-lg font-semibold">{result.eta_minutes} min</div>
+              <div className="text-lg font-semibold">{Number(result.eta_minutes).toFixed(1)} min</div>
               <div className="text-sm text-gray-600 mt-2">Distance</div>
-              <div className="text-lg font-semibold">{result.distance_km} km</div>
+              <div className="text-lg font-semibold">{Number(result.distance_km).toFixed(3)} km</div>
               <div className="text-sm text-gray-600 mt-2">Average Safety</div>
               <div className="text-lg font-semibold">{result.average_safety_score}</div>
               <div className="pt-2 flex gap-2 flex-wrap">
@@ -310,7 +310,7 @@ function Planner() {
                     {alternatives.map((alt, i) => (
                       <button key={i} onClick={() => setChosenRoute(alt)} className={`text-left p-2 rounded border ${alt===chosenRoute?'border-blue-600 bg-blue-50':'hover:bg-gray-50'}`}>
                         <div className="flex items-center justify-between text-sm">
-                          <div>ETA {alt.eta_minutes}m · {(alt.distance_m/1000).toFixed(2)}km</div>
+                          <div>ETA {Number(alt.eta_minutes).toFixed(1)}m · {(alt.distance_m/1000).toFixed(3)}km</div>
                           <Badge color={alt.average_safety_score>=75?'green':alt.average_safety_score>=60?'amber':'red'}>Safety {alt.average_safety_score}</Badge>
                         </div>
                       </button>
@@ -346,8 +346,8 @@ function Planner() {
               {visibleTrips.map(t => (
                 <div key={t._id} className="p-2 bg-white rounded border">
                   <div className="flex items-center justify-between">
-                    <div className="text-sm font-medium capitalize">{t.mode.replace('_',' ')} · {t.distance_km} km</div>
-                    <Badge color="blue">{t.eta_minutes} min</Badge>
+                    <div className="text-sm font-medium capitalize">{t.mode.replace('_',' ')} · {Number(t.distance_km).toFixed(3)} km</div>
+                    <Badge color="blue">{Number(t.eta_minutes).toFixed(1)} min</Badge>
                   </div>
                   <div className="text-xs text-gray-600 mt-1">{t.origin?.lat?.toFixed?.(3)},{t.origin?.lon?.toFixed?.(3)} → {t.destination?.lat?.toFixed?.(3)},{t.destination?.lon?.toFixed?.(3)}</div>
                   <div className="flex gap-2 mt-2">
@@ -486,8 +486,8 @@ function UserTripsCompact() {
         {trips.slice(0,6).map(t => (
           <div key={t._id} className="p-2 border rounded text-sm">
             <div className="flex items-center justify-between">
-              <div className="capitalize">{t.mode.replace('_',' ')} · {t.distance_km} km</div>
-              <Badge color="blue">{t.eta_minutes} min</Badge>
+              <div className="capitalize">{t.mode.replace('_',' ')} · {Number(t.distance_km).toFixed(3)} km</div>
+              <Badge color="blue">{Number(t.eta_minutes).toFixed(1)} min</Badge>
             </div>
             <div className="text-xs text-gray-600 mt-1">Safety {t.safety_score} · {t.origin?.lat?.toFixed?.(2)},{t.origin?.lon?.toFixed?.(2)} → {t.destination?.lat?.toFixed?.(2)},{t.destination?.lon?.toFixed?.(2)}</div>
           </div>
