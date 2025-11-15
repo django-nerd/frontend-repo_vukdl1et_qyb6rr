@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import LocationPicker from './components/LocationPicker'
+import { MapContainer, TileLayer, Marker, Polyline } from 'react-leaflet'
+import 'leaflet/dist/leaflet.css'
 
 const API_BASE = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000'
 
@@ -59,7 +61,6 @@ function Planner() {
   const [end, setEnd] = useState({ lat: 28.6129, lon: 77.2295 })
 
   const segments = useMemo(() => {
-    // Create 2 mock segments between start and end for scoring demo
     const mid = {
       lat: (start.lat + end.lat) / 2,
       lon: (start.lon + end.lon) / 2,
@@ -103,9 +104,14 @@ function Planner() {
     setResult(data)
   }
 
+  const center = useMemo(() => ({
+    lat: (start.lat + end.lat) / 2,
+    lon: (start.lon + end.lon) / 2,
+  }), [start, end])
+
   return (
     <Section title="Safety-based Route Planner" actions={
-      <button onClick={scoreRoute} className="px-3 py-1.5 rounded bg-blue-600 text-white text-sm hover:bg-blue-700">Score Route</button>
+      <button onClick={scoreRoute} className="px-3 py-1.5 rounded bg-blue-600 text-white text-sm hover:bg-blue-700">Find Safest Route</button>
     }>
       <div className="grid md:grid-cols-3 gap-4">
         <div className="space-y-3">
@@ -119,12 +125,20 @@ function Planner() {
               <button key={t} onClick={() => setTimeOfDay(t)} className={`px-3 py-1.5 rounded border text-sm ${timeOfDay===t? 'bg-gray-900 text-white border-gray-900':'bg-white hover:bg-gray-50'}`}>{t}</button>
             ))}
           </div>
-          <div className="text-xs text-gray-600">Select start and end. Map and labels are in English. Each segment gets a 0–100 Safety Score from lighting, CCTV, police, crowds, crime, community reports, and time of day.</div>
+          <div className="text-xs text-gray-600">Click the map to set Start and End. Each segment gets a 0–100 Safety Score from lighting, CCTV, police, crowds, crime, community reports, and time of day.</div>
           <LocationPicker start={start} setStart={setStart} end={end} setEnd={setEnd} />
         </div>
         <div className="md:col-span-2">
           <div className="aspect-[16/9] w-full rounded-lg overflow-hidden border">
-            <iframe title="map" className="w-full h-full" src={`https://www.openstreetmap.org/export/embed.html?bbox=${encodeURIComponent([Math.min(start.lon,end.lon)-0.02, Math.min(start.lat,end.lat)-0.02, Math.max(start.lon,end.lon)+0.02, Math.max(start.lat,end.lat)+0.02].join(','))}&layer=mapnik`}></iframe>
+            <MapContainer center={[center.lat, center.lon]} zoom={14} style={{ height: '100%', width: '100%' }}>
+              <TileLayer
+                attribution='&copy; OpenStreetMap contributors'
+                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+              />
+              <Marker position={[start.lat, start.lon]} />
+              <Marker position={[end.lat, end.lon]} />
+              <Polyline positions={[[start.lat, start.lon], [end.lat, end.lon]]} color="#2563eb" />
+            </MapContainer>
           </div>
           {result && (
             <div className="mt-4 grid md:grid-cols-3 gap-4">

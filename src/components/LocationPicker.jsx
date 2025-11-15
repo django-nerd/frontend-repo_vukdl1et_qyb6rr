@@ -1,9 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-
-// A lightweight OSM map using Leaflet-like interaction via maplibre-gl would need deps.
-// To keep the MVP dependency-free, we use the OSM embed plus text inputs for lat/lon
-// and an English UI. Users can paste or click presets, and we reflect bbox around
-// start/end.
+import { MapContainer, TileLayer, Marker, Polyline, useMapEvents } from 'react-leaflet'
+import L from 'leaflet'
+import 'leaflet/dist/leaflet.css'
 
 const presets = [
   { label: 'Central Park, NYC', start: { lat: 40.7812, lon: -73.9665 }, end: { lat: 40.758, lon: -73.9855 } },
@@ -11,8 +9,35 @@ const presets = [
   { label: 'Marina Bay, Singapore', start: { lat: 1.283, lon: 103.860 }, end: { lat: 1.279, lon: 103.854 } },
 ]
 
+// Fix default marker icons for Leaflet when bundling
+const DefaultIcon = L.icon({
+  iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+  iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
+  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+  iconSize: [25, 41],
+  iconAnchor: [12, 41],
+})
+L.Marker.prototype.options.icon = DefaultIcon
+
+function ClickSelector({ start, setStart, end, setEnd, selecting, setSelecting }) {
+  useMapEvents({
+    click(e) {
+      const { lat, lng } = e.latlng
+      if (selecting === 'start') {
+        setStart({ lat, lon: lng })
+        setSelecting('end')
+      } else if (selecting === 'end') {
+        setEnd({ lat, lon: lng })
+        setSelecting(null)
+      }
+    }
+  })
+  return null
+}
+
 export default function LocationPicker({ start, setStart, end, setEnd }) {
   const [presetIdx, setPresetIdx] = useState('')
+  const [selecting, setSelecting] = useState(null) // 'start' | 'end' | null
 
   useEffect(() => {
     if (presetIdx === '') return
@@ -21,18 +46,10 @@ export default function LocationPicker({ start, setStart, end, setEnd }) {
     setEnd(p.end)
   }, [presetIdx])
 
-  const bbox = useMemo(() => {
-    const lats = [start.lat, end.lat].filter(x => typeof x === 'number')
-    const lons = [start.lon, end.lon].filter(x => typeof x === 'number')
-    if (lats.length < 2 || lons.length < 2) return '77.20,28.60,77.24,28.62'
-    const minLat = Math.min(...lats)
-    const maxLat = Math.max(...lats)
-    const minLon = Math.min(...lons)
-    const maxLon = Math.max(...lons)
-    const padLat = (maxLat - minLat) * 0.2 || 0.01
-    const padLon = (maxLon - minLon) * 0.2 || 0.01
-    return `${minLon - padLon},${minLat - padLat},${maxLon + padLon},${maxLat + padLat}`
-  }, [start, end])
+  const center = useMemo(() => ({
+    lat: (start.lat + end.lat) / 2,
+    lon: (start.lon + end.lon) / 2,
+  }), [start, end])
 
   return (
     <div className="space-y-3">
@@ -61,18 +78,29 @@ export default function LocationPicker({ start, setStart, end, setEnd }) {
         </div>
       </div>
 
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <span className="text-xs text-gray-600">Quick presets:</span>
         <select value={presetIdx} onChange={e => setPresetIdx(e.target.value)} className="border rounded px-2 py-1 text-sm">
           <option value="">Choose a location</option>
           {presets.map((p, i) => <option key={i} value={i}>{p.label}</option>)}
         </select>
+        <button onClick={() => setSelecting('start')} className={`px-2 py-1 rounded text-xs border ${selecting==='start'?'bg-blue-600 text-white':'bg-white'}`}>Pick start on map</button>
+        <button onClick={() => setSelecting('end')} className={`px-2 py-1 rounded text-xs border ${selecting==='end'?'bg-green-600 text-white':'bg-white'}`}>Pick end on map</button>
       </div>
 
       <div className="aspect-[16/9] w-full rounded-lg overflow-hidden border">
-        <iframe title="map" className="w-full h-full" src={`https://www.openstreetmap.org/export/embed.html?bbox=${encodeURIComponent(bbox)}&layer=mapnik`}></iframe>
+        <MapContainer center={[center.lat, center.lon]} zoom={14} style={{ height: '100%', width: '100%' }}>
+          <TileLayer
+            attribution='&copy; OpenStreetMap contributors'
+            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+          />
+          <ClickSelector start={start} setStart={setStart} end={end} setEnd={setEnd} selecting={selecting} setSelecting={setSelecting} />
+          <Marker position={[start.lat, start.lon]} />
+          <Marker position={[end.lat, end.lon]} />
+          <Polyline positions={[[start.lat, start.lon], [end.lat, end.lon]]} color="#2563eb" />
+        </MapContainer>
       </div>
-      <p className="text-xs text-gray-500">Map language: English. You can paste coordinates or use presets. Full SDK routing can be added next.</p>
+      <p className="text-xs text-gray-500">Click the map to set points. First click sets Start, second sets End. Use the button below to find the safest route.</p>
     </div>
   )
 }
