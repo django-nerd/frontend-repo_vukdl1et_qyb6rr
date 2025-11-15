@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import LocationPicker from './components/LocationPicker'
 
 const API_BASE = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000'
 
@@ -54,38 +55,48 @@ function Planner() {
   const [timeOfDay, setTimeOfDay] = useState('day')
   const [result, setResult] = useState(null)
 
-  const segments = useMemo(() => ([
-    {
-      segment_id: 'A',
-      start: { lat: 28.61, lon: 77.21 },
-      end: { lat: 28.612, lon: 77.22 },
-      distance_m: 800,
-      avg_speed_kmh: 28,
-      signals: {
-        streetlight_intensity: 0.75,
-        cctv_density: 0.6,
-        police_proximity: 0.65,
-        crowd_density: 0.55,
-        crime_index: 0.2,
-        community_reports_safety: 0.7,
-      }
-    },
-    {
-      segment_id: 'B',
-      start: { lat: 28.612, lon: 77.22 },
-      end: { lat: 28.615, lon: 77.225 },
-      distance_m: 1200,
-      avg_speed_kmh: 35,
-      signals: {
-        streetlight_intensity: 0.4,
-        cctv_density: 0.3,
-        police_proximity: 0.4,
-        crowd_density: 0.35,
-        crime_index: 0.6,
-        community_reports_safety: 0.2,
-      }
-    },
-  ]), [])
+  const [start, setStart] = useState({ lat: 28.6315, lon: 77.2167 })
+  const [end, setEnd] = useState({ lat: 28.6129, lon: 77.2295 })
+
+  const segments = useMemo(() => {
+    // Create 2 mock segments between start and end for scoring demo
+    const mid = {
+      lat: (start.lat + end.lat) / 2,
+      lon: (start.lon + end.lon) / 2,
+    }
+    return ([
+      {
+        segment_id: 'A',
+        start: { lat: start.lat, lon: start.lon },
+        end: { lat: mid.lat, lon: mid.lon },
+        distance_m: 800,
+        avg_speed_kmh: 28,
+        signals: {
+          streetlight_intensity: 0.75,
+          cctv_density: 0.6,
+          police_proximity: 0.65,
+          crowd_density: 0.55,
+          crime_index: 0.2,
+          community_reports_safety: 0.7,
+        }
+      },
+      {
+        segment_id: 'B',
+        start: { lat: mid.lat, lon: mid.lon },
+        end: { lat: end.lat, lon: end.lon },
+        distance_m: 1200,
+        avg_speed_kmh: 35,
+        signals: {
+          streetlight_intensity: 0.4,
+          cctv_density: 0.3,
+          police_proximity: 0.4,
+          crowd_density: 0.35,
+          crime_index: 0.6,
+          community_reports_safety: 0.2,
+        }
+      },
+    ])
+  }, [start, end])
 
   const scoreRoute = async () => {
     const data = await post('/api/routes/score', { segments, time_of_day: timeOfDay, mode })
@@ -108,35 +119,36 @@ function Planner() {
               <button key={t} onClick={() => setTimeOfDay(t)} className={`px-3 py-1.5 rounded border text-sm ${timeOfDay===t? 'bg-gray-900 text-white border-gray-900':'bg-white hover:bg-gray-50'}`}>{t}</button>
             ))}
           </div>
-          <div className="text-xs text-gray-600">Each road segment gets a 0–100 Safety Score calculated from lighting, CCTV, police proximity, crowds, crime, community reports, and time of day.</div>
+          <div className="text-xs text-gray-600">Select start and end. Map and labels are in English. Each segment gets a 0–100 Safety Score from lighting, CCTV, police, crowds, crime, community reports, and time of day.</div>
+          <LocationPicker start={start} setStart={setStart} end={end} setEnd={setEnd} />
         </div>
         <div className="md:col-span-2">
           <div className="aspect-[16/9] w-full rounded-lg overflow-hidden border">
-            <iframe title="map" className="w-full h-full" src="https://www.openstreetmap.org/export/embed.html?bbox=77.20%2C28.60%2C77.24%2C28.62&layer=mapnik"></iframe>
+            <iframe title="map" className="w-full h-full" src={`https://www.openstreetmap.org/export/embed.html?bbox=${encodeURIComponent([Math.min(start.lon,end.lon)-0.02, Math.min(start.lat,end.lat)-0.02, Math.max(start.lon,end.lon)+0.02, Math.max(start.lat,end.lat)+0.02].join(','))}&layer=mapnik`}></iframe>
           </div>
+          {result && (
+            <div className="mt-4 grid md:grid-cols-3 gap-4">
+              <div className="p-3 rounded border bg-gray-50">
+                <div className="text-sm text-gray-600">Mode</div>
+                <div className="text-lg font-semibold">{result.mode}</div>
+                <div className="text-sm text-gray-600 mt-2">ETA</div>
+                <div className="text-lg font-semibold">{result.eta_minutes} min</div>
+                <div className="text-sm text-gray-600 mt-2">Average Safety</div>
+                <div className="text-lg font-semibold">{result.average_safety_score}</div>
+              </div>
+              <div className="md:col-span-2 space-y-2">
+                {result.segment_scores?.map(s => (
+                  <div key={s.segment_id} className="flex items-center justify-between p-2 rounded border">
+                    <div className="flex items-center gap-2"><Badge color={s.safety_score>70?'green':s.safety_score>50?'amber':'red'}>Seg {s.segment_id}</Badge></div>
+                    <div className="text-sm">Safety Score</div>
+                    <div className="text-base font-semibold">{s.safety_score}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
-      {result && (
-        <div className="mt-4 grid md:grid-cols-3 gap-4">
-          <div className="p-3 rounded border bg-gray-50">
-            <div className="text-sm text-gray-600">Mode</div>
-            <div className="text-lg font-semibold">{result.mode}</div>
-            <div className="text-sm text-gray-600 mt-2">ETA</div>
-            <div className="text-lg font-semibold">{result.eta_minutes} min</div>
-            <div className="text-sm text-gray-600 mt-2">Average Safety</div>
-            <div className="text-lg font-semibold">{result.average_safety_score}</div>
-          </div>
-          <div className="md:col-span-2 space-y-2">
-            {result.segment_scores?.map(s => (
-              <div key={s.segment_id} className="flex items-center justify-between p-2 rounded border">
-                <div className="flex items-center gap-2"><Badge color={s.safety_score>70?'green':s.safety_score>50?'amber':'red'}>Seg {s.segment_id}</Badge></div>
-                <div className="text-sm">Safety Score</div>
-                <div className="text-base font-semibold">{s.safety_score}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
     </Section>
   )
 }
@@ -433,7 +445,7 @@ export default function App() {
         <SOS />
         <HistoryAlerts />
 
-        <footer className={`${night? 'text-gray-400':'text-gray-500'} text-xs text-center pt-4`}>Offline maps, vibration alerts, and prediction-ready architecture included in backend design. Connect native SDKs for full mobile features.</footer>
+        <footer className={`${night? 'text-gray-400':'text-gray-500'} text-xs text-center pt-4`}>English labels and map. Offline maps, vibration alerts, and prediction-ready backend are prepared. Add SDKs for full mobile features.</footer>
       </div>
     </div>
   )
