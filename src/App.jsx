@@ -25,8 +25,9 @@ function Badge({ children, color = 'blue' }) {
     amber: 'bg-amber-50 text-amber-700 border-amber-200',
     violet: 'bg-violet-50 text-violet-700 border-violet-200',
     gray: 'bg-gray-50 text-gray-700 border-gray-200',
+    slate: 'bg-slate-50 text-slate-700 border-slate-200',
   }
-  return <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs border ${colors[color]}`}>{children}</span>
+  return <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs border ${colors[color] || colors.blue}`}>{children}</span>
 }
 
 function Toggle({ label, checked, onChange }) {
@@ -48,7 +49,8 @@ function useBackend() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
   }).then(r => r.json())
-  return { get, post }
+  const del = (path) => fetch(`${API_BASE}${path}`, { method: 'DELETE' }).then(r => r.json())
+  return { get, post, del }
 }
 
 // Fix default marker icons for Leaflet when bundling
@@ -78,14 +80,15 @@ function MapClickSelector({ selecting, setSelecting, setStart, setEnd }) {
 }
 
 function Planner() {
-  const { post, get } = useBackend()
+  const { post, get, del } = useBackend()
   const [mode, setMode] = useState('balanced')
   const [timeOfDay, setTimeOfDay] = useState('day')
+  const [autoRefresh, setAutoRefresh] = useState(true)
   const [result, setResult] = useState(null)
 
   const [start, setStart] = useState({ lat: 28.6315, lon: 77.2167 })
   const [end, setEnd] = useState({ lat: 28.6129, lon: 77.2295 })
-  const [selecting, setSelecting] = useState(null) // 'start' | 'end' | null
+  const [selecting, setSelecting] = useState(null)
 
   const [chosenRoute, setChosenRoute] = useState(null)
   const [alternatives, setAlternatives] = useState([])
@@ -95,6 +98,8 @@ function Planner() {
   // My Trips and Bookmarks
   const [trips, setTrips] = useState([])
   const [loadingTrips, setLoadingTrips] = useState(false)
+  const [tripFilter, setTripFilter] = useState('all')
+  const [summary, setSummary] = useState(null)
   const [bookmarks, setBookmarks] = useState([])
   const [bookmarkName, setBookmarkName] = useState('Home ⇄ Work')
 
@@ -109,6 +114,8 @@ function Planner() {
       setLoadingTrips(true)
       const t = await get(`/api/trips?user_uid=${encodeURIComponent(uid)}`)
       setTrips(t.trips || [])
+      const s = await get(`/api/trips/summary?user_uid=${encodeURIComponent(uid)}`)
+      setSummary(s)
     } finally {
       setLoadingTrips(false)
     }
@@ -129,7 +136,6 @@ function Planner() {
   useEffect(() => { loadTrips(userId) }, [userId])
 
   const showSafest = async (opts) => {
-    // Allow override for re-run
     const s = opts?.start || start
     const e = opts?.end || end
     const m = opts?.mode || mode
@@ -138,9 +144,7 @@ function Planner() {
     setChosenRoute(null)
     setAlternatives([])
     setLogStatus('')
-    const data = await post('/api/routes/plan', {
-      start: s, end: e, mode: m, time_of_day: t
-    })
+    const data = await post('/api/routes/plan', { start: s, end: e, mode: m, time_of_day: t })
     setChosenRoute(data.chosen)
     setAlternatives(data.alternatives || [])
     setResult({
@@ -150,6 +154,14 @@ function Planner() {
       distance_km: data.chosen ? (data.chosen.distance_m / 1000).toFixed(2) : null,
     })
   }
+
+  // Auto recompute when mode/time changes (if previously computed)
+  useEffect(() => {
+    if (autoRefresh && result) {
+      showSafest()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, timeOfDay])
 
   const routeId = useMemo(() => {
     if (!chosenRoute?.geometry?.coordinates?.length) return ''
@@ -190,6 +202,11 @@ function Planner() {
     setFromTrip(t)
     await showSafest({ start: t.origin, end: t.destination, mode: t.mode })
   }
+  const deleteTrip = async (t) => {
+    if (!t?._id) return
+    await del(`/api/trips/${t._id}`)
+    loadTrips(userId)
+  }
 
   // Bookmarks actions
   const addBookmark = () => {
@@ -210,6 +227,12 @@ function Planner() {
     saveBookmarks(next)
   }
 
+  // Derived filtered trips
+  const visibleTrips = useMemo(() => {
+    if (tripFilter === 'all') return trips
+    return trips.filter(t => t.mode === tripFilter)
+  }, [trips, tripFilter])
+
   return (
     <Section title="Safety-based Route Planner" actions={
       <div className="flex gap-2">
@@ -227,9 +250,12 @@ function Planner() {
           {['day','night','dawn_dusk'].map(t => (
             <button key={t} onClick={() => setTimeOfDay(t)} className={`px-3 py-1.5 rounded border text-sm ${timeOfDay===t? 'bg-gray-900 text-white border-gray-900':'bg-white hover:bg-gray-50'}`}>{t}</button>
           ))}
+          <div className="ml-auto flex items-center gap-3">
+            <Toggle label="Auto recompute" checked={autoRefresh} onChange={setAutoRefresh} />
+          </div>
         </div>
 
-        <div className="rounded-lg overflow-hidden border" style={{ height: '60vh' }}>
+        <div className="rounded-lg overflow-hidden border" style={{ height: '58vh' }}>
           <MapContainer center={[center.lat, center.lon]} zoom={14} style={{ height: '100%', width: '100%' }}>
             <TileLayer
               attribution='&copy; OpenStreetMap contributors'
@@ -238,11 +264,9 @@ function Planner() {
             <MapClickSelector selecting={selecting} setSelecting={setSelecting} setStart={setStart} setEnd={setEnd} />
             <Marker position={[start.lat, start.lon]} />
             <Marker position={[end.lat, end.lon]} />
-            {/* Draw alternatives first in grey */}
             {alternatives.filter(a=>a!==chosenRoute).map((alt, i) => (
               <Polyline key={i} positions={(alt.geometry?.coordinates||[]).map(c=>[c[0], c[1]])} color="#9ca3af" weight={3} opacity={0.6} />
             ))}
-            {/* Draw chosen route on top in blue */}
             {chosenRoute && (
               <Polyline positions={(chosenRoute.geometry?.coordinates||[]).map(c=>[c[0], c[1]])} color="#2563eb" weight={6} />
             )}
@@ -260,21 +284,40 @@ function Planner() {
               <div className="text-lg font-semibold">{result.distance_km} km</div>
               <div className="text-sm text-gray-600 mt-2">Average Safety</div>
               <div className="text-lg font-semibold">{result.average_safety_score}</div>
-              <div className="pt-2 flex gap-2">
+              <div className="pt-2 flex gap-2 flex-wrap">
                 <button onClick={logTrip} disabled={!chosenRoute} className="px-3 py-1.5 rounded bg-green-600 text-white text-sm disabled:opacity-50">Save this trip</button>
                 <button onClick={() => showSafest()} className="px-3 py-1.5 rounded border text-sm">Recompute</button>
+                <div className="text-xs text-gray-600 self-center">Quick compare:</div>
+                {['fastest','safest','balanced','night_safe','female_friendly'].map(m => (
+                  <button key={m} onClick={() => showSafest({ mode: m })} className={`px-2 py-1 rounded text-xs border ${mode===m? 'bg-blue-600 text-white border-blue-600':'bg-white hover:bg-gray-50'}`}>{m.replace('_',' ')}</button>
+                ))}
               </div>
               {logStatus && <div className="text-xs text-green-700 mt-2">{logStatus}</div>}
             </div>
-            <div className="md:col-span-2">
-              <div className="text-sm text-gray-600">Route and alternatives are drawn on the map. Segment cards were removed for a cleaner view.</div>
-              <div className="mt-3 p-2 border rounded bg-white/60">
+            <div className="md:col-span-2 space-y-3">
+              <div className="text-sm text-gray-600">Route and alternatives are drawn on the map. Select a mode/time to see different options.</div>
+              <div className="p-2 border rounded bg-white/60">
                 <div className="text-xs text-gray-600 mb-1">Bookmark current start/end</div>
                 <div className="flex gap-2">
                   <input value={bookmarkName} onChange={e=>setBookmarkName(e.target.value)} className="flex-1 border rounded px-2 py-1 text-sm" placeholder="Bookmark name" />
                   <button onClick={addBookmark} className="px-3 py-1.5 rounded border text-sm">Add</button>
                 </div>
               </div>
+              {!!alternatives.length && (
+                <div className="p-2 border rounded bg-white/60">
+                  <div className="text-xs text-gray-700 mb-1">Alternatives</div>
+                  <div className="grid sm:grid-cols-2 gap-2">
+                    {alternatives.map((alt, i) => (
+                      <button key={i} onClick={() => setChosenRoute(alt)} className={`text-left p-2 rounded border ${alt===chosenRoute?'border-blue-600 bg-blue-50':'hover:bg-gray-50'}`}>
+                        <div className="flex items-center justify-between text-sm">
+                          <div>ETA {alt.eta_minutes}m · {(alt.distance_m/1000).toFixed(2)}km</div>
+                          <Badge color={alt.average_safety_score>=75?'green':alt.average_safety_score>=60?'amber':'red'}>Safety {alt.average_safety_score}</Badge>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -284,23 +327,37 @@ function Planner() {
           <div className="p-3 rounded border bg-gray-50">
             <div className="flex items-center justify-between mb-2">
               <div className="text-sm font-medium">My Trips</div>
-              <button onClick={() => loadTrips(userId)} className="px-2 py-1 text-xs rounded border">{loadingTrips ? 'Loading...' : 'Refresh'}</button>
+              <div className="flex items-center gap-2">
+                <select value={tripFilter} onChange={e=>setTripFilter(e.target.value)} className="px-2 py-1 text-xs border rounded">
+                  <option value="all">All</option>
+                  <option value="fastest">Fastest</option>
+                  <option value="safest">Safest</option>
+                  <option value="balanced">Balanced</option>
+                  <option value="night_safe">Night safe</option>
+                  <option value="female_friendly">Female friendly</option>
+                </select>
+                <button onClick={() => loadTrips(userId)} className="px-2 py-1 text-xs rounded border">{loadingTrips ? 'Loading...' : 'Refresh'}</button>
+              </div>
             </div>
+            {summary && (
+              <div className="mb-2 text-xs text-gray-600">{summary.total_trips} trips · {summary.total_km} km · Avg safety {summary.avg_safety} · Fav: {summary.favorite_mode || '—'}</div>
+            )}
             <div className="space-y-2 max-h-64 overflow-auto pr-1">
-              {trips.map(t => (
+              {visibleTrips.map(t => (
                 <div key={t._id} className="p-2 bg-white rounded border">
                   <div className="flex items-center justify-between">
-                    <div className="text-sm font-medium">{t.mode} · {t.distance_km} km</div>
+                    <div className="text-sm font-medium capitalize">{t.mode.replace('_',' ')} · {t.distance_km} km</div>
                     <Badge color="blue">{t.eta_minutes} min</Badge>
                   </div>
                   <div className="text-xs text-gray-600 mt-1">{t.origin?.lat?.toFixed?.(3)},{t.origin?.lon?.toFixed?.(3)} → {t.destination?.lat?.toFixed?.(3)},{t.destination?.lon?.toFixed?.(3)}</div>
                   <div className="flex gap-2 mt-2">
                     <button onClick={() => { setFromTrip(t) }} className="px-2 py-1 text-xs rounded border">View</button>
                     <button onClick={() => reRunTrip(t)} className="px-2 py-1 text-xs rounded bg-blue-600 text-white">Re-run</button>
+                    <button onClick={() => deleteTrip(t)} className="px-2 py-1 text-xs rounded border text-red-600">Delete</button>
                   </div>
                 </div>
               ))}
-              {!trips.length && <div className="text-sm text-gray-500">No trips yet. Plan and save a trip to see it here.</div>}
+              {!visibleTrips.length && <div className="text-sm text-gray-500">No trips yet.</div>}
             </div>
           </div>
           <div className="p-3 rounded border bg-gray-50">
@@ -347,9 +404,97 @@ function Planner() {
             </div>
           </div>
         </div>
-        <p className="text-xs text-gray-600">Use the large map to click your Start and End. Routes are snapped to roads with full turns and geometry.</p>
+        <p className="text-xs text-gray-600">Use the large map to click your Start and End. Routes change with mode and time-of-day for better safety vs speed tradeoffs.</p>
       </div>
     </Section>
+  )
+}
+
+function HistoryAlerts() {
+  const { get } = useBackend()
+  const [alerts, setAlerts] = useState([])
+  const [lat, setLat] = useState(28.61)
+  const [lon, setLon] = useState(77.21)
+  const [tod, setTod] = useState('night')
+
+  const loadAlerts = async () => {
+    const a = await get(`/api/alerts?lat=${lat}&lon=${lon}&time_of_day=${tod}`)
+    setAlerts(a.alerts || [])
+  }
+
+  useEffect(()=>{ loadAlerts() }, [])
+
+  return (
+    <Section title="Smart Alerts & Trip History">
+      <div className="grid md:grid-cols-2 gap-4">
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-sm font-medium">Live Smart Alerts</div>
+            <div className="flex items-center gap-2">
+              <select value={tod} onChange={e=>setTod(e.target.value)} className="px-2 py-1 text-xs border rounded">
+                <option value="day">day</option>
+                <option value="night">night</option>
+                <option value="dawn_dusk">dawn_dusk</option>
+              </select>
+              <button onClick={loadAlerts} className="px-2 py-1 text-xs rounded border">Refresh</button>
+            </div>
+          </div>
+          <div className="grid gap-2">
+            {alerts.map((al, i) => (
+              <div key={i} className="p-2 border rounded text-sm flex items-start justify-between">
+                <div>
+                  <div className="font-medium">{al.message}</div>
+                  {al.recommendation && <div className="text-xs text-gray-600 mt-0.5">{al.recommendation}</div>}
+                </div>
+                <div className="flex flex-col items-end gap-1">
+                  {al.distance_m != null && <Badge color="slate">{al.distance_m}m</Badge>}
+                  <Badge color={al.severity>=4? 'red' : al.severity>=3? 'amber':'green'}>sev {al.severity || 1}</Badge>
+                </div>
+              </div>
+            ))}
+            {!alerts.length && <div className="text-sm text-gray-500">No alerts right now.</div>}
+          </div>
+        </div>
+        <UserTripsCompact />
+      </div>
+    </Section>
+  )
+}
+
+function UserTripsCompact() {
+  const { get } = useBackend()
+  const [trips, setTrips] = useState([])
+  const [uid, setUid] = useState('user_a')
+
+  const loadTrips = async () => {
+    const t = await get(`/api/trips?user_uid=${encodeURIComponent(uid)}`)
+    setTrips(t.trips || [])
+  }
+
+  useEffect(()=>{ loadTrips() }, [])
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-sm font-medium">Recent Trips</div>
+        <div className="flex items-center gap-2">
+          <input value={uid} onChange={e=>setUid(e.target.value)} className="px-2 py-1 text-xs border rounded" placeholder="user id" />
+          <button onClick={loadTrips} className="px-2 py-1 text-xs rounded border">Refresh</button>
+        </div>
+      </div>
+      <div className="space-y-2">
+        {trips.slice(0,6).map(t => (
+          <div key={t._id} className="p-2 border rounded text-sm">
+            <div className="flex items-center justify-between">
+              <div className="capitalize">{t.mode.replace('_',' ')} · {t.distance_km} km</div>
+              <Badge color="blue">{t.eta_minutes} min</Badge>
+            </div>
+            <div className="text-xs text-gray-600 mt-1">Safety {t.safety_score} · {t.origin?.lat?.toFixed?.(2)},{t.origin?.lon?.toFixed?.(2)} → {t.destination?.lat?.toFixed?.(2)},{t.destination?.lon?.toFixed?.(2)}</div>
+          </div>
+        ))}
+        {!trips.length && <div className="text-sm text-gray-500">No trips logged yet.</div>}
+      </div>
+    </div>
   )
 }
 
@@ -555,74 +700,14 @@ function SharingGuardian() {
   )
 }
 
-function HistoryAlerts() {
-  const { get } = useBackend()
-  const [alerts, setAlerts] = useState([])
-  const [trips, setTrips] = useState([])
-
-  const load = async () => {
-    const a = await get('/api/alerts?lat=28.61&lon=77.21&time_of_day=night')
-    setAlerts(a.alerts || [])
-    const t = await get('/api/trips?user_uid=user_a')
-    setTrips(t.trips || [])
-  }
-
-  useEffect(()=>{ load() }, [])
-
-  return (
-    <Section title="Smart Alerts & Trip History">
-      <div className="grid md:grid-cols-2 gap-4">
-        <div>
-          <div className="text-sm font-medium mb-2">Live Smart Alerts</div>
-          <div className="space-y-2">
-            {alerts.map((al, i) => (
-              <div key={i} className="p-2 border rounded text-sm flex items-center justify-between">
-                <div>{al.message}</div>
-                <Badge color="amber">{al.type}</Badge>
-              </div>
-            ))}
-            {!alerts.length && <div className="text-sm text-gray-500">No alerts right now.</div>}
-          </div>
-        </div>
-        <div>
-          <div className="text-sm font-medium mb-2">Recent Trips</div>
-          <div className="space-y-2">
-            {trips.map(t => (
-              <div key={t._id} className="p-2 border rounded text-sm">
-                <div className="flex items-center justify-between">
-                  <div>{t.mode} · {t.distance_km} km</div>
-                  <Badge color="blue">{t.eta_minutes} min</Badge>
-                </div>
-              </div>
-            ))}
-            {!trips.length && <div className="text-sm text-gray-500">No trips logged yet.</div>}
-          </div>
-        </div>
-      </div>
-    </Section>
-  )
-}
-
-function ModesBar({ night, setNight, women, setWomen, saver, setSaver }) {
-  useEffect(()=>{
-    document.documentElement.classList.toggle('dark', night)
-  }, [night])
-  return (
-    <div className="flex flex-wrap gap-4 items-center">
-      <Toggle label="NightShield Mode" checked={night} onChange={setNight} />
-      <Toggle label="Women Safety Mode" checked={women} onChange={setWomen} />
-      <Toggle label="Battery Saver" checked={saver} onChange={setSaver} />
-      {night && <Badge color="violet">High-contrast UI + frequent guardian updates</Badge>}
-      {women && <Badge color="red">Female-focused alerts enabled</Badge>}
-      {saver && <Badge color="gray">Reduced updates to save battery</Badge>}
-    </div>
-  )
-}
-
 export default function App() {
   const [night, setNight] = useState(false)
   const [women, setWomen] = useState(false)
   const [saver, setSaver] = useState(false)
+
+  useEffect(()=>{
+    document.documentElement.classList.toggle('dark', night)
+  }, [night])
 
   return (
     <div className={`min-h-screen ${night ? 'bg-gray-950' : 'bg-gradient-to-br from-blue-50 to-indigo-50'}`}>
@@ -635,17 +720,24 @@ export default function App() {
               <p className={`${night? 'text-gray-300':'text-gray-600'} text-xs`}>Fastest · Safest · Balanced · Night-safe · Women-friendly</p>
             </div>
           </div>
-          <ModesBar night={night} setNight={setNight} women={women} setWomen={setWomen} saver={saver} setSaver={setSaver} />
+          <div className="flex flex-wrap gap-4 items-center">
+            <Toggle label="NightShield Mode" checked={night} onChange={setNight} />
+            <Toggle label="Women Safety Mode" checked={women} onChange={setWomen} />
+            <Toggle label="Battery Saver" checked={saver} onChange={setSaver} />
+            {night && <Badge color="violet">High-contrast UI + frequent guardian updates</Badge>}
+            {women && <Badge color="red">Female-focused alerts enabled</Badge>}
+            {saver && <Badge color="gray">Reduced updates to save battery</Badge>}
+          </div>
         </header>
 
         <Planner />
-        <Companions />
-        <CommunityReports />
-        <SharingGuardian />
-        <SOS />
         <HistoryAlerts />
+        <SharingGuardian />
+        <CommunityReports />
+        <Companions />
+        <SOS />
 
-        <footer className={`${night? 'text-gray-400':'text-gray-500'} text-xs text-center pt-4`}>English labels and map. Offline maps, vibration alerts, and prediction-ready backend are prepared. Add SDKs for full mobile features.</footer>
+        <footer className={`text-xs text-center pt-4 ${night? 'text-gray-400':'text-gray-500'}`}>English labels and map. Offline maps, vibration alerts, and prediction-ready backend are prepared. Add SDKs for full mobile features.</footer>
       </div>
     </div>
   )
